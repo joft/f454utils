@@ -1,0 +1,201 @@
+
+startssh is a "custom app" for the bticino F454. Its purpose is to
+start the SSH daemon "dropbear" at startup to allow SSH logins.
+
+dropbear is a lightweight SSH server and already part of the system software
+pre-installed on the F454. However it is not started automatically.
+
+startssh follows the F454_SDK_Custom_Application.odt guide found within
+bticino's "F454 - SDK".
+
+The following paragraphs show how to compile startssh from source, install the
+binary on F454 and how to setup secure authentication for SSH logins.
+
+DISCLAIMER: The listed instruction were put together to the best of knowledge,
+however the author cannot held liable for any damage which might arise.
+It's all on the readers responsibility. You need to know what you are doing
+_before_ you do it.
+
+
+Compilation
+===========
+
+Requirements:
+ - PC running a Linux-based system, e.g. Ubuntu 12.04 LTS
+ - CodeSourcery's "Sourcery G++ Lite 2009q1-203" toolchain for ARM
+   installer: http://www.codesourcery.com/sgpp/lite/arm/portal/package4573/public/arm-none-linux-gnueabi/arm-2009q1-203-arm-none-linux-gnueabi.bin
+   archive:   http://www.codesourcery.com/sgpp/lite/arm/portal/package4573/public/arm-none-linux-gnueabi/arm-2009q1-203-arm-none-linux-gnueabi-i686-pc-linux-gnu.tar.bz2
+   NOTE: This toolchain is also part of bticino's "F454 - SDK", which is a
+         Ubuntu 12.04 LTS based Live-CD:
+         http://www.myopen-legrandgroup.com/devices/gateways/m/f454_-_003598/45317.aspx
+         The toolchain is installed under /SDK/Sourcery_G++_Lite within this Live-CD.
+
+ - Replace $CCCPATH with path to the toolchain's binaries, e.g.:
+   /SDK/Sourcery_G++_Lite/bin
+ - Replace $GITURL with URL of the repository comprising this README file.
+
+Instructions:
+
+# Open a shell
+
+# Get source code repository from github.com
+git clone $GITURL btutils
+
+# Compile source code, using toolchain's cross-compiler
+cd btutils/apps/startssh
+make PATH=$CCCPATH:$PATH CROSS_COMPILE=arm-none-linux-gnueabi-
+
+# You'll find the executable to be transfered to the F454 in
+# the current directory (btutils/apps/startssh/), it is called
+# "startssh_strip".
+
+
+Installation
+============
+
+Requirements:
+ - PC running a Linux-based system, e.g. Ubuntu 12.04 LTS
+ - F454 running w/ firmware v1.00.34 or v1.00.37
+ - Puma Software
+   http://www.myopen-legrandgroup.com/devices/puma/m/mediagallery/38554.aspx
+
+ - Hostname or IP address of F454, e.g. 192.168.1.35
+   Replace $GHOST with this name/address.
+ - "OPEN password", e.g. 12345
+   Replace $GPASS with this password.
+
+ - Choose an unique app directory name (unique among your other apps!);
+   an integer greater than 100, e.g. 101
+   Replace $EXTRAPATH with this integer.
+ - Choose an unique app id (unique among your other apps!);
+   integer, usually: if $EXTRAPATH is 101 then 1
+   Replace $X with this integer.
+
+
+Instructions:
+
+# Open a shell
+
+# Send (= download) app to F454
+mkdir $EXTRAPATH
+cp -a startssh_strip $EXTRAPATH/startssh
+puma xd $EXTRAPATH -e $GHOST $GPASS -d F454
+rm -fr $EXTRAPATH
+
+# Receive (= upload) conf.zip from F454
+puma cu . -e $GHOST $GPASS -d F454
+
+# Unzip received conf.zip, using password "bticino"
+unzip -P bticino conf.zip
+
+# Edit (just unzipped) conf.xml
+# 1. Find line with tag "<abil_sdk>" and make sure it looks like
+#    <abil_sdk>1</abil_sdk>
+#    Initially there is a "0" instead of "1".
+# 2. Add these lines/tags:
+#    <custom$X>
+#    <type>2</type>
+#    <extra_path>$EXTRAPATH</extra_path>
+#    <name>startssh</name>
+#    </custom$X>
+#    within a "<sdk>...</sdk>" block.
+#    The "<sdk>...</sdk>" block itself should be a sibling of the
+#    "<abil_sdk>1</abil_sdk>" block.
+# So, if startssh is your first and only app, the appropriate part of conf.xml
+# should look like:
+# ...
+# <abil_sdk>1</abil_sdk>
+# <sdk>
+# <custom1>
+# <type>2</type>
+# <extra_path>101</extra_path>
+# <name>startssh</name>
+# </custom1>
+# </sdk>
+# </servizi>
+# <mhe>
+# ...
+
+# Send (= download) modfied conf.xml to F454
+puma cd conf.xml -e $GHOST $GPASS -d F454
+
+# The F454 will do a reboot now, which will take some time.
+# After some minutes you should be able to login as root:
+
+ssh -p 1022 root@$GHOST
+
+
+Setup Authentication
+====================
+
+As indicated above the startssh app launches the SSH daemon on the non-standard
+port 1022 - to avoid conflicts with any SSH daemon possibly launched by the
+firmware itself! So the non-standard port 1022 has to be specified when using
+any SSH client - as shown above.
+
+The circumstance of user root NOT having any password set within the original
+installation of a F454 allows us to login as root - without any password!
+
+Of course not having a password is a _VERY BAD IDEA_. However instead of
+setting a password, it is recommended to use "PubkeyAuthentication". For this to
+work the public key of one's SSH key pair has to be transfered onto the F454.
+Your default SSH key pair usually is located in ~/.ssh on your PC. The public
+key is usually called "id_rsa.pub" and the private one "id_rsa".
+
+At boot time of the F454, the startssh app looks for the ".ssh/authorized_keys"
+file within user root's home directory. This file is supposed to comprise
+public keys which are allowed to login. If this file is found, startssh
+_completely disables_ password-based logins (which includes
+"no/blank password").
+
+NOTE AGAIN: The mere existence of .ssh/authorized_keys within user root's home
+directory on the F454 disables password-based logins altogether! The contents
+is _NOT_ considered by startssh!
+
+To transfer your public key onto the F454 and save it there as an "authorized
+key", complete the following steps:
+
+IMPORTANT: The steps include remounting the rootfs Read-Write!
+           Be careful not to destroy anything! The rootfs is Read-Only by
+           default and on purpose!
+
+# Open a shell
+
+# Have a look at your public key on your PC
+cat ~/.ssh/id_rsa.pub
+
+# Login to F454
+ssh -p 1022 root@$GHOST
+
+# Remount root filesystem Read-Write (Read-Only by default)
+mount -o remount,rw /
+
+# Create .ssh directory within root's home directory
+mkdir -p ~/.ssh
+
+# Open _another_ shell and transfer your public key
+cat ~/.ssh/id_rsa.pub | ssh -p 1022 root@$GHOST "cat - >>.ssh/authorized_keys"
+
+# Return to the first shell, the one still logged in to F454
+
+# Make _really_ sure that the "authorized_keys" file comprises your public key
+# on a line of its own - each and every single character of it! If it does not
+# you won't be able to login using your private key after reboot _and_ since
+# the "authorized_keys" file exists you won't be able to login without password
+# as before, since any password-based login will be disabled by startssh.
+cat ~/.ssh/authorized_keys
+
+# Remount root filesystem Read-Only again
+mount -o remount,ro /
+
+# Reboot the F454
+reboot && exit
+
+# After having rebooted, which can take some minutes, you should be able to login
+# to your F454 using your SSH private key:
+
+ssh -p 1022 -i ~/.ssh/id_rsa root@$GHOST
+
+# NOTE: The -i <file> option can be omitted of course, if <file> is
+#       "~/.ssh/id_rsa" which is the default of a usual SSH client.
+
