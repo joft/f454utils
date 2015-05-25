@@ -1,0 +1,239 @@
+
+OpenVPN -- A Secure tunneling daemon   by OpenVPN Technologies, Inc.
+https://openvpn.net/index.php/open-source.html
+
+This directory comprises patches for OpenVPN source code and instructions to
+build the OpenVPN server daemon for F454. The result is a "custom app" as
+specified in the F454_SDK_Custom_Application.odt guide found within bticino's
+"F454 - SDK".
+
+The following paragraphs show how to download, patch and compile OpenVPN from
+source - and finally how to install the binary and needed configuration files
+on the F454.
+
+DISCLAIMER: The listed instruction were put together to the best of knowledge,
+however the author cannot held liable for any damage which might arise.
+It's all on the readers responsibility. You need to know what you are doing
+_before_ you do it.
+
+
+Compilation
+===========
+
+Requirements:
+ - PC running a Linux-based system, e.g. Ubuntu 12.04 LTS or 14.04 LTS
+ - CodeSourcery's "Sourcery G++ Lite 2009q1-203" toolchain for ARM
+   installer: http://www.codesourcery.com/sgpp/lite/arm/portal/package4573/public/arm-none-linux-gnueabi/arm-2009q1-203-arm-none-linux-gnueabi.bin
+   archive:   http://www.codesourcery.com/sgpp/lite/arm/portal/package4573/public/arm-none-linux-gnueabi/arm-2009q1-203-arm-none-linux-gnueabi-i686-pc-linux-gnu.tar.bz2
+   NOTE: This toolchain is also part of bticino's "F454 - SDK", which is a
+         Ubuntu 12.04 LTS based Live-CD:
+         http://www.myopen-legrandgroup.com/devices/gateways/m/f454_-_003598/45317.aspx
+         The toolchain is installed under /SDK/Sourcery_G++_Lite within this
+	 Live-CD.
+ - bticino's F454 SDK directory. This is also part of the above mentioned
+   Live-CD. The directory is /SDK - and subdirectory /SDK/arago-2011.06 is what
+   is needed.
+
+ - Replace $GITURL with URL of the repository comprising this README file, e.g.:
+   https://github.com/joft/f454utils.git
+ - Replace $XCCPATH with path to the toolchain's binaries, e.g.:
+   /SDK/Sourcery_G++_Lite/bin
+ - Replace $SDKPATH with path to the F454 SDK directory, which comprises the
+   "arago-2011.06" subdirectory, e.g.:
+   /SDK
+
+
+Instructions:
+
+# Open a shell
+
+# 1. Get source code repository
+git clone $GITURL btutils
+
+# 2. Compile source code, using toolchain's cross-compiler and F454 SDK
+cd btutils/apps/openvpn
+make PATH=$XCCPATH:$PATH CROSS_COMPILE=arm-none-linux-gnueabi- SDK=$SDKPATH
+
+# You'll find the executable to be transferred to the F454 in directory
+# btutils/apps/openvpn/openvpn-2.3.6/src/openvpn . It is called
+# "openvpn_strip".
+
+
+Installation
+============
+
+Requirements:
+ - PC running a Linux-based system, e.g. Ubuntu 12.04 LTS or 14.04 LTS
+ - F454 running w/ firmware v1.00.37*
+   * This OpenVPN server app has not yet been tested on any real F454 running
+     any newer firmware! However there is no known reason why it shouldn't work
+     on newer versions.
+ - Puma Software
+   http://www.myopen-legrandgroup.com/devices/puma/m/mediagallery/38554.aspx
+
+ - Hostname or IP address of F454, e.g. 192.168.1.35
+   Replace $GHOST with this name/address.
+ - "OPEN password", e.g. 12345
+   Replace $GPASS with this password.
+
+ - Choose an unique app directory name (unique among your other apps!);
+   an integer greater than 100, e.g. 101
+   Replace $EXTRAPATH with this integer.
+ - Choose an unique app id (unique among your other apps!);
+   integer, usually: if $EXTRAPATH is 101 then take 1 for the unique app id
+   Replace $X with this integer.
+
+ - Public key infrastructure (PKI) files such as server and client certificate
+   and key files, CA certificate and DH parameter files (all in .pem format),
+   see step 2.
+   This README does not comprise instructions on how to get these files.
+   The OpenVPN project maintains a tool called "easy-rsa", which is a set of
+   shell scripts to create and maintain a PKI.
+
+
+Instructions:
+
+# Open a shell
+
+# 1. Create $EXTRAPATH subdirectory and populate with executable and
+# configuration.
+cd btutils/apps/openvpn
+make APP_DIR=$EXTRAPATH $EXTRAPATH/create
+
+# The above "make" invocation should have copied the executable and the default
+# OpenVPN multi-client server configuration file (server.conf) to $EXTRAPATH .
+# This configuration is then slightly modified:
+# - switch off option "comp-lzo" (packet compression on VPN connection)
+# - have the OpenVPN "status" file in /tmp/openvpn-status.log
+# - comment any "cipher" setting (usually already off)
+# - add dedicated "cipher", "auth" and "tls-cipher" settings
+#   (partially according to https://community.openvpn.net/openvpn/wiki/Hardening)
+# The configuration file references various PKI files, which you need to add in
+# the next step.
+
+# 2. Add the following PKI files to $EXTRAPATH .
+# - dh2048.pem  -  DH parameter file, .pem format
+# - ca.crt      -  CA certificate, .pem format
+# - server.crt  -  Certificate for your F454, .pem format
+# - server.key  -  Key for your F454, .pem format
+
+# The contents of $EXTRAPATH should now look like this:
+ls -l $EXTRAPATH
+total 644
+-rw-r--r-- 1 ubuntu ubuntu   1818 May 25 11:53 ca.crt
+-rw-r--r-- 1 ubuntu ubuntu    424 May 25 11:52 dh2048.pem
+-rwxr-xr-x 1 ubuntu ubuntu 624981 May 25 11:40 openvpn
+-rw-r--r-- 1 ubuntu ubuntu  10725 May 25 11:42 server.conf
+-rw-r--r-- 1 ubuntu ubuntu   5624 May 25 11:55 server.crt
+-rw------- 1 ubuntu ubuntu   1704 May 25 11:55 server.key
+-rwxrwxr-x 1 ubuntu ubuntu   1704 May 25 11:41 up.sh
+
+# 3. Edit $EXTRAPATH/server.conf as needed.
+# See https://community.openvpn.net/openvpn/wiki/Openvpn23ManPage .
+# Above all, you might want to change one of the following settings:
+# - type of used virtual network device, option "dev"
+#   The default is "tun", which will interconnect VPN members on the IP layer
+#   (OSI layer 3) - thus: no broadcasts, no SSDP for example, ...
+#   The alternative is "tap" to interconnect members on the Ethernet layer
+#   (OSI layer 2). But think about it, if you really need this.
+# - IP addresses used by VPN members to communicate, option "server"
+#   The default is to use IP network "10.8.0.0/24". Obviously you have to choose
+#   something which is NOT used locally in your LAN where your F454 is located
+#   (the server) or in any remote LAN you want to connect to your F454 from.
+#   Using x.x.x.0/24 will assign x.x.x.1 to the server.
+# - route to LAN instructions, option "push "route ...""
+#   If you want to access, through your VPN, not only the F454 server itself,
+#   but also the LAN your F454 is connected to, you need to have the VPN server
+#   to "push" routing instructions to its clients.
+#   At the end of the given server.conf there is a commented out "push" option,
+#   which, if enabled, makes the server instruct its clients how to reach the
+#   LAN "behind" the server. This depends on the IP network used by the LAN.
+#   The given "push" option shows how to specify the default network used by
+#   bticino devices (192.168.1.0/24).
+#   However, having this "push" option in the configuration is just half of the
+#   solution. All LAN members you want to reach via VPN do also need to know
+#   how to reach the VPN IP network, too. Otherwise their replies to requests
+#   won't make it back to the VPN clients. Usually this is done by letting the
+#   default gateway of your LAN have a route to, for example, 10.8.0.0/24
+#   (VPN IP network) via 192.168.1.35 (IP address of F454 and VPN server).
+
+# 4. Make sure that the configuration file is correct and all needed PKI files
+# do exist. This can be done, to a certain degree, by using OpenVPN on your PC
+# like it will be used on the F454 later:
+sudo make APP_DIR=$EXTRAPATH $EXTRAPATH/test
+
+# This compiles the exact same OpenVPN version for your PC and starts the
+# resulting executable using $EXTRAPATH/server.conf as its configuration file 
+#. Finally this should yield such a messages:
+Mon May 25 11:57:26 2015 Initialization Sequence Completed
+
+# Now terminate the daemon by pressing Ctrl-C and remove the empty ipp.txt file:
+make APP_DIR=$EXTRAPATH $EXTRAPATH/clean
+
+# 5. Send (= download) app to F454
+puma xd $EXTRAPATH -e $GHOST $GPASS -d F454
+
+# 6. Receive (= upload) conf.zip from F454
+puma cu . -e $GHOST $GPASS -d F454
+
+# 7. Unzip received conf.zip, using password "bticino"
+unzip -P bticino conf.zip
+
+# 8. Edit (just unzipped) conf.xml
+# a. Find line with tag "<abil_sdk>" and make sure it looks like
+#    <abil_sdk>1</abil_sdk>
+#    Initially there is a "0" instead of "1".
+# b. Add these lines/tags:
+#    <custom$X>
+#    <type>2</type>
+#    <extra_path>$EXTRAPATH</extra_path>
+#    <name>openvpn</name>
+#    </custom$X>
+#    within a "<sdk>...</sdk>" block.
+#    The "<sdk>...</sdk>" block itself should be a sibling of the
+#    "<abil_sdk>1</abil_sdk>" block.
+# So, if openvpn is your first and only app, the appropriate part of conf.xml
+# should look like:
+# ...
+# <abil_sdk>1</abil_sdk>
+# <sdk>
+# <custom1>
+# <type>2</type>
+# <extra_path>101</extra_path>
+# <name>openvpn</name>
+# </custom1>
+# </sdk>
+# </servizi>
+# <mhe>
+# ...
+
+# 9. Send (= download) modified conf.xml to F454
+puma cd conf.xml -e $GHOST $GPASS -d F454
+
+# The F454 will restart its software stack at this point, now including the
+# OpenVPN server. This will take some time. After start-up the OpenVPN server
+# is listening on UDP port 1194 (unless you changed this server.conf).
+
+
+# The following steps are clearly beyond the scope of this README, which is
+# the OpenVPN server installation on an F454. Nevertheless, what follows is a
+# brief list of steps to get OpenVPN clients up and running.
+
+# 10. On your Internet gateway, forward a UDP port of your choice to UDP port
+# 1194 at your F454. If you changed the default port, which is 1194, in step 3
+# you obviously need target the port you have chosen.
+
+# 11. Like the OpenVPN server, a client also needs a unqiue certificate and key,
+# plus CA certificate.
+
+# 12. Install and configure OpenVPN on your potential clients (Laptop,
+# Smartphone, ...). The configuration has to "match" the server's in various
+# aspects.
+# - take OpenVPN's sample "client.conf", client-side for the multi-client server
+# - point to your Internet gateway's public IP address (usually via dyndns)
+#   and the forwarded port (option "remote")
+# - let options "ca", "cert" and "key" point to the files mentioned in the last
+#   step
+# - disable option "comp-lzo"
+# - add options "cipher AES-256-CBC" and "auth SHA256"
+# - no need to add option "tls-cipher" though

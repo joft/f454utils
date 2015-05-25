@@ -1,0 +1,486 @@
+From 7011e21f33af82508b0fbc6375d1f6cb5da893cf Mon Sep 17 00:00:00 2001
+From: Joachim Foerster <JOFT@gmx.de>
+Date: Tue, 19 May 2015 22:31:29 +0200
+Subject: [PATCH] src/openvpn: Add support for being run as a bticino custom
+ application.
+
+Signed-off-by: Joachim Foerster <JOFT@gmx.de>
+---
+ configure.ac            |  12 +++
+ src/openvpn/Makefile.am |   4 +
+ src/openvpn/btapp.c     | 208 ++++++++++++++++++++++++++++++++++++++++++++++++
+ src/openvpn/btapp.h     |  30 +++++++
+ src/openvpn/mtcp.c      |  12 +++
+ src/openvpn/mudp.c      |  12 +++
+ src/openvpn/openvpn.c   |  13 +++
+ src/openvpn/options.c   |  12 +++
+ src/openvpn/tun.c       |   8 ++
+ 9 files changed, 311 insertions(+)
+ create mode 100644 src/openvpn/btapp.c
+ create mode 100644 src/openvpn/btapp.h
+
+diff --git a/configure.ac b/configure.ac
+index 0e0fae5..4157c5a 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -260,6 +260,13 @@ AC_ARG_ENABLE(
+ 	[enable_systemd="no"]
+ )
+ 
++AC_ARG_ENABLE(
++	[btapp],
++	[AS_HELP_STRING([--enable-btapp], [enable bticino custom application suppport @<:@default=no@:>@])],
++	,
++	[enable_btapp="no"]
++)
++
+ AC_ARG_WITH(
+ 	[special-build],
+ 	[AS_HELP_STRING([--with-special-build=STRING], [specify special build string])],
+@@ -924,6 +931,10 @@ if test "$enable_systemd" = "yes" ; then
+     LIBS="${saved_LIBS}"
+ fi
+ 
++if test "$enable_btapp" = "yes" ; then
++   AC_DEFINE(ENABLE_BTAPP, 1, [Enable bticino custom application support])
++fi
++
+ 
+ AC_MSG_CHECKING([git checkout])
+ GIT_CHECKOUT="no"
+@@ -1100,6 +1111,7 @@ AM_CONDITIONAL([WIN32], [test "${WIN32}" = "yes"])
+ AM_CONDITIONAL([GIT_CHECKOUT], [test "${GIT_CHECKOUT}" = "yes"])
+ AM_CONDITIONAL([ENABLE_PLUGIN_AUTH_PAM], [test "${enable_plugin_auth_pam}" = "yes"])
+ AM_CONDITIONAL([ENABLE_PLUGIN_DOWN_ROOT], [test "${enable_plugin_down_root}" = "yes"])
++AM_CONDITIONAL([ENABLE_BTAPP], [test "${enable_btapp}" = "yes"])
+ 
+ plugindir="${with_plugindir}"
+ sampledir="\$(docdir)/sample"
+diff --git a/src/openvpn/Makefile.am b/src/openvpn/Makefile.am
+index 2e602f1..87c6134 100644
+--- a/src/openvpn/Makefile.am
++++ b/src/openvpn/Makefile.am
+@@ -125,3 +125,7 @@ if WIN32
+ openvpn_SOURCES += openvpn_win32_resources.rc
+ openvpn_LDADD += -lgdi32 -lws2_32 -lwininet -lcrypt32 -liphlpapi -lwinmm
+ endif
++if ENABLE_BTAPP
++openvpn_SOURCES += \
++	btapp.c btapp.h
++endif
+diff --git a/src/openvpn/btapp.c b/src/openvpn/btapp.c
+new file mode 100644
+index 0000000..08eecac
+--- /dev/null
++++ b/src/openvpn/btapp.c
+@@ -0,0 +1,208 @@
++/*
++ * btapp - OpenVPN "custom app" support for bticino F454
++ *
++ * Copyright (C) 2015  Joachim Foerster <JOFT@gmx.de>
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License
++ * version 2, only - as published by the Free Software Foundation.
++ * The usual option to use any later version is hereby excluded.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#include <sys/types.h>
++#include <sys/stat.h>
++#include <sys/wait.h>
++#include <stdlib.h>
++#include <stdio.h>
++#include <fcntl.h>
++#include <unistd.h>
++#include <time.h>
++#include <limits.h>
++#include <string.h>
++
++#include <stdarg.h>
++
++#define BTWDDIR "/var/tmp/bticino/bt_wd"
++#define APPNAME "openvpn"
++
++#define BTWDFILE BTWDDIR "/" APPNAME
++#define BTWDINT 10
++
++#define PROC_SELF_EXE "/proc/self/exe"
++
++
++static time_t last;
++static unsigned int sum;
++
++static const char *def_tundev_path = "/dev/net/tun";
++static const char *alt_tundev_path = "/tmp/tun";
++
++
++void bt_wd_init(void)
++{
++	int i;
++
++	time(&last);
++	sum = 0;
++}
++
++static do_bt_wd_kick(void)
++{
++	int rc;
++
++	rc = system("touch " BTWDFILE);
++	if (rc == -1)
++		/* If system() w/ touch fails something is really wrong with
++		 * the system, so let it run into bt_daemon's watchdog timeout!
++		 */
++		perror("system touch");
++}
++
++void bt_wd_kick(void)
++{
++	time_t now;
++
++	if (!time(&now)) {
++		/* If time() fails something is really wrong with the system,
++		 * so let it run into bt_daemon's watchdog timeout!
++		 */
++		perror("time failed");
++		return;
++	}
++
++	if (now == last)
++		return;
++
++	sum += (unsigned int)difftime(now, last);
++
++	if (sum >= BTWDINT) {
++		do_bt_wd_kick();
++		sum = 0;
++	}
++
++	last = now;
++}
++
++static int check_tundev(const char *path)
++{
++	int rc;
++	struct stat st;
++
++	rc = stat(path, &st);
++	if (!rc) {
++		if ((major(st.st_rdev) == 10) &&
++		    (minor(st.st_rdev) == 200) &&
++		    (st.st_mode & S_IFCHR))
++			return 1;
++
++		return 0;
++	}
++
++	return -1;
++}
++
++const char *bt_get_tundev_path(void)
++{
++	dev_t dt;
++	int rc;
++
++	/* In the various error case present here, we cannot really do anything
++	 * in terms of error handling ...
++	 */
++
++	rc = system("modprobe tun");
++	if (rc == -1)
++		perror("system modprobe tun failed");
++	else if (rc)
++		fprintf(stderr, "modprobe tun returned non-zero: %d\n",
++			WEXITSTATUS(rc));
++
++	rc = check_tundev(def_tundev_path);
++	if (rc == 1)
++		return def_tundev_path;
++
++	//TODO: try to create def_tundev_path, expect RO-fs
++
++	rc = check_tundev(alt_tundev_path);
++	if (rc == 1)
++		return alt_tundev_path;
++	else if (rc == 0) {
++		rc = unlink(alt_tundev_path);
++		if (rc)
++			perror("unlink alt_tundev_path failed");
++	}
++
++	dt = makedev(10, 200);
++	rc = mknod(alt_tundev_path, S_IRUSR | S_IWUSR | S_IFCHR, dt);
++	if (rc)
++		perror("mknod alt_tundev_path failed");
++
++	return alt_tundev_path;
++}
++
++static char *get_self_path(void)
++{
++	int rc;
++	struct stat sb;
++	char *target;
++	char *last;
++
++	rc = lstat(PROC_SELF_EXE, &sb);
++	if (rc == -1) {
++		perror("lstat " PROC_SELF_EXE " failed");
++		return NULL;
++	}
++
++	if (!sb.st_size)
++		sb.st_size = PATH_MAX;
++
++	target = malloc(sb.st_size + 1);
++	if (!target) {
++		perror("malloc target failed");
++		return NULL;
++	}
++
++	rc = readlink(PROC_SELF_EXE, target, sb.st_size);
++	if (rc == -1) {
++		perror("readlink " PROC_SELF_EXE " failed");
++		free(target);
++		return NULL;
++	}
++
++	last = strrchr(target, '/');
++	if (!last) {
++		fprintf(stderr, "link does not contain a / character\n");
++		free(target);
++		return NULL;
++	}
++
++	last[0] = '\0';
++
++	return target;
++}
++
++int chdir_self_path(void)
++{
++	char *path;
++	int rc;
++
++	path = get_self_path();
++	if (!path)
++		return -1;
++
++	rc = chdir(path);
++	if (rc == -1)
++		perror("chdir to self path failed");
++
++	free(path);
++	return rc;
++}
+diff --git a/src/openvpn/btapp.h b/src/openvpn/btapp.h
+new file mode 100644
+index 0000000..9b71731
+--- /dev/null
++++ b/src/openvpn/btapp.h
+@@ -0,0 +1,30 @@
++/*
++ * btapp - OpenVPN "custom app" support for bticino F454
++ *
++ * Copyright (C) 2015  Joachim Foerster <JOFT@gmx.de>
++ *
++ * This program is free software; you can redistribute it and/or
++ * modify it under the terms of the GNU General Public License
++ * version 2, only - as published by the Free Software Foundation.
++ * The usual option to use any later version is hereby excluded.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA
++ */
++
++#ifndef _BTAPP_H_
++#define _BTAPP_H_
++
++int chdir_self_path(void);
++const char *bt_get_tundev_path(void);
++
++void bt_wd_init(void);
++void bt_wd_kick(void);
++
++#endif
+diff --git a/src/openvpn/mtcp.c b/src/openvpn/mtcp.c
+index dc15f09..db2dab9 100644
+--- a/src/openvpn/mtcp.c
++++ b/src/openvpn/mtcp.c
+@@ -37,6 +37,10 @@
+ 
+ #include "memdbg.h"
+ 
++#ifdef ENABLE_BTAPP
++#include "btapp.h"
++#endif
++
+ /*
+  * TCP States
+  */
+@@ -684,6 +688,10 @@ tunnel_server_tcp (struct context *top)
+   /* finished with initialization */
+   initialization_sequence_completed (top, ISC_SERVER); /* --mode server --proto tcp-server */
+ 
++#ifdef ENABLE_BTAPP
++  bt_wd_init();
++#endif
++
+   /* per-packet event loop */
+   while (true)
+     {
+@@ -697,6 +705,10 @@ tunnel_server_tcp (struct context *top)
+       /* check on status of coarse timers */
+       multi_process_per_second_timers (&multi);
+ 
++#ifdef ENABLE_BTAPP
++      bt_wd_kick();
++#endif
++
+       /* timeout? */
+       if (status > 0)
+ 	{
+diff --git a/src/openvpn/mudp.c b/src/openvpn/mudp.c
+index 3468dab..332193c 100644
+--- a/src/openvpn/mudp.c
++++ b/src/openvpn/mudp.c
+@@ -37,6 +37,10 @@
+ 
+ #include "memdbg.h"
+ 
++#ifdef ENABLE_BTAPP
++#include "btapp.h"
++#endif
++
+ /*
+  * Get a client instance based on real address.  If
+  * the instance doesn't exist, create it while
+@@ -242,6 +246,10 @@ tunnel_server_udp_single_threaded (struct context *top)
+   /* finished with initialization */
+   initialization_sequence_completed (top, ISC_SERVER); /* --mode server --proto udp */
+ 
++#ifdef ENABLE_BTAPP
++  bt_wd_init();
++#endif
++
+   /* per-packet event loop */
+   while (true)
+     {
+@@ -255,6 +263,10 @@ tunnel_server_udp_single_threaded (struct context *top)
+       /* check on status of coarse timers */
+       multi_process_per_second_timers (&multi);
+ 
++#ifdef ENABLE_BTAPP
++      bt_wd_kick();
++#endif
++
+       /* timeout? */
+       if (multi.top.c2.event_set_status == ES_TIMEOUT)
+ 	{
+diff --git a/src/openvpn/openvpn.c b/src/openvpn/openvpn.c
+index fd87fc1..f4b1c05 100644
+--- a/src/openvpn/openvpn.c
++++ b/src/openvpn/openvpn.c
+@@ -39,6 +39,11 @@
+ 
+ #include "forward-inline.h"
+ 
++#ifdef ENABLE_BTAPP
++#include "btapp.h"
++#endif
++
++
+ #define P2P_CHECK_SIG() EVENT_LOOP_CHECK_SIGNAL (c, process_signal_p2p, c);
+ 
+ static bool
+@@ -71,6 +76,10 @@ tunnel_point_to_point (struct context *c)
+   if (IS_SIG (c))
+     return;
+ 
++#ifdef ENABLE_BTAPP
++  bt_wd_init();
++#endif
++
+   /* main event loop */
+   while (true)
+     {
+@@ -84,6 +93,10 @@ tunnel_point_to_point (struct context *c)
+       io_wait (c, p2p_iow_flags (c));
+       P2P_CHECK_SIG();
+ 
++#ifdef ENABLE_BTAPP
++      bt_wd_kick();
++#endif
++
+       /* timeout? */
+       if (c->c2.event_set_status == ES_TIMEOUT)
+ 	{
+diff --git a/src/openvpn/options.c b/src/openvpn/options.c
+index 5bddca4..e65ba19 100644
+--- a/src/openvpn/options.c
++++ b/src/openvpn/options.c
+@@ -3889,7 +3889,19 @@ parse_argv (struct options *options,
+ 
+   /* usage message */
+   if (argc <= 1)
++#if ENABLE_BTAPP
++    {
++      char *p[MAX_PARMS];
++
++      CLEAR (p);
++      (void)chdir_self_path();
++      p[0] = "config";
++      p[1] = "server.conf";
++      add_option (options, p, NULL, 0, 0, msglevel, permission_mask, option_types_found, es);
++    }
++#else
+     usage ();
++#endif
+ 
+   /* config filename specified only? */
+   if (argc == 2 && strncmp (argv[1], "--", 2))
+diff --git a/src/openvpn/tun.c b/src/openvpn/tun.c
+index ba4b15e..1c239ae 100644
+--- a/src/openvpn/tun.c
++++ b/src/openvpn/tun.c
+@@ -49,6 +49,10 @@
+ 
+ #include "memdbg.h"
+ 
++#ifdef ENABLE_BTAPP
++#include "btapp.h"
++#endif
++
+ #ifdef WIN32
+ 
+ /* #define SIMULATE_DHCP_FAILED */       /* simulate bad DHCP negotiation */
+@@ -1484,7 +1488,11 @@ open_tun (const char *dev, const char *dev_type, const char *dev_node, struct tu
+        */
+       const char *node = dev_node;
+       if (!node)
++#ifdef ENABLE_BTAPP
++	node = bt_get_tundev_path();
++#else
+ 	node = "/dev/net/tun";
++#endif
+ 
+       /*
+        * Open the interface
+-- 
+1.9.1
+

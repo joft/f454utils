@@ -1,0 +1,8 @@
+/*.tar.gz
+/*.sha256sum
+/*-stamp
+/pkg-config.env
+/build
+
+openvpn-*/
+/1*/
